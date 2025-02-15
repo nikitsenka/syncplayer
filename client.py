@@ -1,34 +1,62 @@
-import socket, json, time
+import socket
+import json
+import time
 import vlc
 import argparse
+import base64
+import os
 
 DELAY_TO_SYNC_SEC = 2
-
-FILE_PATH = "song.mp3"
 MASTER_PORT = 12345
 
-player = vlc.MediaPlayer(FILE_PATH)
+# We will set the player later once we know the actual filename.
+player = None
 
 def set_playhead(ms):
-    player.set_time(ms)
+    if player is not None:
+        player.set_time(ms)
 
 def handle_message(msg, calibration):
+    global player
+
     cmd = msg.get("cmd", "")
-    if cmd == "PLAY":
+
+    if cmd == "FILE":
+        # Receive file if it doesn't already exist
+        filename = msg.get("filename", "song.mp3")
+        encoded_data = msg.get("data", "")
+
+        if not os.path.exists(filename):
+            with open(filename, "wb") as f:
+                f.write(base64.b64decode(encoded_data))
+            print(f"Received and saved new file: {filename}")
+        else:
+            print(f"File '{filename}' already exists. Skipping download.")
+
+        # Reinitialize the player to use this file for future playback
+        player = vlc.MediaPlayer(filename)
+
+    elif cmd == "PLAY":
+        if player is None:
+            print("No audio file available for playback. Please ensure file is sent first.")
+            return
+
         target_time_ns = msg["startTime"] + DELAY_TO_SYNC_SEC * 1000000000
         startPosMs = msg["startPosMs"]
         while True:
             current_time_ns = int(time.time_ns())
             if current_time_ns >= target_time_ns:
-                print(f"Current time {current_time_ns}")
                 break
             time.sleep(0.000001)
 
         set_playhead(startPosMs + calibration)
-        print(f"Current playhead {player.get_time()}")
         player.play()
+        print(f"Playing from {player.get_time()}ms (calibration: {calibration}ms)")
+
     elif cmd == "STOP":
-        player.stop()
+        if player is not None:
+            player.stop()
+            print("Playback stopped.")
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Audio playback synchronization client')
@@ -60,12 +88,13 @@ def main():
             buffer += data.decode()
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
+                if line.strip() == "":
+                    continue
                 msg = json.loads(line)
                 handle_message(msg, args.calibration)
-                if args.verbose:
+                if args.verbose and "cmd" in msg:
                     print(f"Received command: {msg['cmd']}")
     finally:
-        # Clean up
         s.close()
 
 if __name__ == "__main__":

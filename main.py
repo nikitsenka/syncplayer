@@ -1,10 +1,13 @@
-import socket, time, threading, json
+import socket
+import time
+import threading
+import json
 import argparse
+import base64
+import os
 
 clients = []
-playback_info = {"startTime": None, "positionMs": 0, "playing": False}
 server_running = True
-
 
 def accept_clients(server_socket):
     while server_running:
@@ -17,7 +20,6 @@ def accept_clients(server_socket):
             continue
         except:
             break
-
 
 def send_to_all(msg_dict):
     msg_str = json.dumps(msg_dict) + "\n"
@@ -32,18 +34,33 @@ def send_to_all(msg_dict):
     for c in disconnected_clients:
         clients.remove(c)
 
+def send_file(file_path):
+    """Send the specified audio file to all connected clients (base64-encoded)."""
+    if not os.path.exists(file_path):
+        print(f"Error: File '{file_path}' does not exist.")
+        return
+    try:
+        with open(file_path, "rb") as f:
+            file_data = f.read()
+        encoded_data = base64.b64encode(file_data).decode("utf-8")
+        send_to_all({
+            "cmd": "FILE",
+            "filename": os.path.basename(file_path),
+            "data": encoded_data
+        })
+        print(f"File '{file_path}' sent to all clients.")
+    except Exception as e:
+        print(f"Failed to send file: {e}")
 
 def start_playback(position_sec=0):
     now = int(time.time_ns())
     position_ms = int(position_sec * 1000)  # Convert seconds to milliseconds
     send_to_all({"cmd": "PLAY", "startTime": now, "startPosMs": position_ms})
 
-
 def stop_playback():
     send_to_all({"cmd": "STOP"})
 
-
-def cleanup():
+def cleanup(server_socket, accept_thread):
     global server_running
     server_running = False
     for c in clients:
@@ -52,7 +69,9 @@ def cleanup():
         except:
             pass
     clients.clear()
-
+    server_socket.close()
+    accept_thread.join()
+    print("Server shutdown complete")
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Audio playback synchronization server')
@@ -62,8 +81,9 @@ def parse_args():
                         help='Port to listen on (default: 12345)')
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='Enable verbose output')
+    parser.add_argument('--audio-file', type=str, default=None,
+                        help='Path to the audio file to synchronize across clients')
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
@@ -82,19 +102,20 @@ def main():
     print("  play           - Start playback from beginning")
     print("  play <seconds> - Start playback from specified position")
     print("  stop           - Stop playback")
+    print("  send_file      - Send the audio file (if specified via --audio-file) to all clients")
     print("  exit           - Quit the program")
 
     while True:
         cmd = input("> ")
-        cmd_parts = cmd.split()
-
-        if not cmd_parts:
+        if not cmd.strip():
             continue
+
+        cmd_parts = cmd.split()
 
         if cmd_parts[0] == "play":
             if len(cmd_parts) > 1:
                 try:
-                    start_sec = int(cmd_parts[1])
+                    start_sec = float(cmd_parts[1])
                     start_playback(start_sec)
                     if args.verbose:
                         print(f"Starting playback at {start_sec} seconds")
@@ -104,20 +125,22 @@ def main():
                 start_playback(0)
                 if args.verbose:
                     print("Starting playback from beginning")
-        elif cmd == "stop":
+        elif cmd_parts[0] == "stop":
             stop_playback()
             if args.verbose:
                 print("Stopping playback")
-        elif cmd == "exit":
+        elif cmd_parts[0] == "send_file":
+            if args.audio_file:
+                send_file(args.audio_file)
+            else:
+                print("No audio file specified. Use --audio-file to set a file path.")
+        elif cmd_parts[0] == "exit":
             if args.verbose:
                 print("Shutting down server...")
-            cleanup()
+            cleanup(server_socket, accept_thread)
             break
-
-    server_socket.close()
-    accept_thread.join()
-    print("Server shutdown complete")
-
+        else:
+            print("Unknown command.")
 
 if __name__ == "__main__":
     main()
