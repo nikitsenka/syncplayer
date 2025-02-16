@@ -81,8 +81,6 @@ def parse_args():
                         help='Port to listen on (default: 12345)')
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='Enable verbose output')
-    parser.add_argument('--audio-file', type=str, default=None,
-                        help='Path to the audio file to synchronize across clients')
     return parser.parse_args()
 
 def main():
@@ -130,8 +128,11 @@ def main():
             if args.verbose:
                 print("Stopping playback")
         elif cmd_parts[0] == "send_file":
-            if args.audio_file:
-                send_file(args.audio_file)
+            if len(cmd_parts) > 1:
+                # White spaces in path issue
+                file_path = " ".join(cmd_parts[1:])
+                file_path = file_path.strip('"\'')
+                send_file(file_path)
             else:
                 print("No audio file specified. Use --audio-file to set a file path.")
         elif cmd_parts[0] == "exit":
