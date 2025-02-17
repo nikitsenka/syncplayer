@@ -37,11 +37,11 @@ Key Requirements:
 	•	Enable SSH if you wish to deploy or debug remotely.
 	2.	Install Dependencies
 	•	On each Pi:
-
-sudo apt-get update
-sudo apt-get install -y vlc
-pip install python-vlc
-
+		```bash
+		sudo apt-get update
+		sudo apt-get install -y vlc
+		pip install python-vlc
+		```
 
 	•	Confirm that python3 and pip are installed.
 	•	Optional: If the master is also a Pi, install the same. Otherwise, for a desktop master, ensure pip install python-vlc plus a local VLC install.
