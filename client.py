@@ -1,62 +1,46 @@
-import socket
-import json
-import time
+import socket, json, time
 import vlc
 import argparse
-import base64
 import os
 
 DELAY_TO_SYNC_SEC = 2
 MASTER_PORT = 12345
 
-# We will set the player later once we know the actual filename.
-player = None
+player = None  # Initialize player as None
 
-def set_playhead(ms):
-    if player is not None:
-        player.set_time(ms)
-
-def handle_message(msg, calibration):
+def handle_message(msg, calibration, music_dir):
     global player
-
     cmd = msg.get("cmd", "")
-
-    if cmd == "FILE":
-        # Receive file if it doesn't already exist
-        filename = msg.get("filename", "song.mp3")
-        encoded_data = msg.get("data", "")
-
-        if not os.path.exists(filename):
-            with open(filename, "wb") as f:
-                f.write(base64.b64decode(encoded_data))
-            print(f"Received and saved new file: {filename}")
-        else:
-            print(f"File '{filename}' already exists. Skipping download.")
-
-        # Reinitialize the player to use this file for future playback
-        player = vlc.MediaPlayer(filename)
-
-    elif cmd == "PLAY":
-        if player is None:
-            print("No audio file available for playback. Please ensure file is sent first.")
-            return
-
+    print(f"Current time: {int(time.time() * 1000)}")
+    if cmd == "PLAY":
+        filename = msg.get("filename", "")
         target_time_ns = msg["startTime"] + DELAY_TO_SYNC_SEC * 1000000000
-        startPosMs = msg["startPosMs"]
-        while True:
-            current_time_ns = int(time.time_ns())
-            if current_time_ns >= target_time_ns:
-                break
-            time.sleep(0.000001)
 
-        set_playhead(startPosMs + calibration)
-        player.play()
-        print(f"Playing from {player.get_time()}ms (calibration: {calibration}ms)")
-
-    elif cmd == "STOP":
-        if player is not None:
+        if filename:
+            filepath = os.path.join(music_dir, filename)
+            if not os.path.exists(filepath):
+                print(f"File {filepath} does not exist.")
+                return
+            if player is None:
+                player = vlc.MediaPlayer(filepath)
+            else:
+                media = vlc.Media(filepath)
+                player.set_media(media)
+            player.play()
+            time.sleep(0.01)
             player.stop()
-            print("Playback stopped.")
+            while True:
+                current_time_ns = int(time.time_ns())
+                if current_time_ns >= target_time_ns:
+                    print(f"Current time {current_time_ns}")
+                    break
+                time.sleep(0.000001)
+            print(f"Current time: {int(time.time() * 1000)}")
+            time.sleep(calibration / 1000)
+            player.play()
+    elif cmd == "STOP":
+        if player:
+            player.stop()
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Audio playback synchronization client')
@@ -68,6 +52,8 @@ def parse_args():
                         help='Enable verbose output')
     parser.add_argument('--calibration', type=int, required=False, default=0,
                         help='ms to adjust (default: 0)')
+    parser.add_argument('--music-dir', default='.',
+                        help='Base directory for music files (default: current directory)')
     return parser.parse_args()
 
 def main():
@@ -88,13 +74,12 @@ def main():
             buffer += data.decode()
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
-                if line.strip() == "":
-                    continue
                 msg = json.loads(line)
-                handle_message(msg, args.calibration)
-                if args.verbose and "cmd" in msg:
+                handle_message(msg, args.calibration, args.music_dir)
+                if args.verbose:
                     print(f"Received command: {msg['cmd']}")
     finally:
+        # Clean up
         s.close()
 
 if __name__ == "__main__":
