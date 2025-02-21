@@ -1,0 +1,45 @@
+<!-- public/index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Music Sync Server</title>
+</head>
+<body>
+  <h1>Music Sync Server</h1>
+
+  <ul id="playlist"></ul>
+
+  <button id="stopBtn">Stop Playback</button>
+
+  <!-- Socket.IO client -->
+  <script src="/socket.io/socket.io.js"></script>
+
+  <script>
+    const socket = io();
+
+    const playlistEl = document.getElementById('playlist');
+    const stopBtn = document.getElementById('stopBtn');
+
+    // When we receive the playlist from server...
+    socket.on('playlist', (songs) => {
+      playlistEl.innerHTML = ''; // Clear old
+      songs.forEach((song, index) => {
+        const li = document.createElement('li');
+        li.textContent = song;
+        li.style.cursor = 'pointer';
+
+        li.addEventListener('dblclick', () => {
+          // Double-click to play
+          socket.emit('play', index);
+        });
+        playlistEl.appendChild(li);
+      });
+    });
+
+    stopBtn.addEventListener('click', () => {
+      socket.emit('stop');
+    });
+  </script>
+</body>
+</html>

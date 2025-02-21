@@ -3,7 +3,7 @@ import vlc
 import argparse
 import os
 
-DELAY_TO_SYNC_SEC = 2
+DELAY_TO_SYNC_SEC = 3
 MASTER_PORT = 12345
 
 player = None  # Initialize player as None
@@ -14,7 +14,7 @@ def handle_message(msg, calibration, music_dir):
     print(f"Current time: {int(time.time() * 1000)}")
     if cmd == "PLAY":
         filename = msg.get("filename", "")
-        target_time_ns = msg["startTime"] + DELAY_TO_SYNC_SEC * 1000000000
+        target_time_ns = msg["startTime"] + (DELAY_TO_SYNC_SEC * 1000000000)
 
         if filename:
             filepath = os.path.join(music_dir, filename)
@@ -29,6 +29,9 @@ def handle_message(msg, calibration, music_dir):
             player.play()
             time.sleep(0.01)
             player.stop()
+            print(f"Received startTime: {msg['startTime']}")
+            print(f"Target time with d: {target_time_ns}")
+            print(f"Current time      : {int(time.time_ns())}")
             while True:
                 current_time_ns = int(time.time_ns())
                 if current_time_ns >= target_time_ns:
