@@ -1,5 +1,4 @@
 // src/server.ts
-
 import fs from 'fs';
 import path from 'path';
 import net from 'net';
@@ -8,11 +7,11 @@ import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 
 ////////////////////////////////////////////////////////////////////////////////
-// 1. TCP Server Logic (similar to the Python code)
+// 1. TCP Server Logic
 ////////////////////////////////////////////////////////////////////////////////
 
 interface PlaybackCommand {
-  cmd: string;
+  cmd: 'PLAY' | 'STOP';
   filename?: string;
   startTime?: number;
   startPosMs?: number;
@@ -21,10 +20,8 @@ interface PlaybackCommand {
 let tcpClients: net.Socket[] = [];
 let serverRunning = true;
 
-/**
- * Accept incoming TCP clients and store them in `tcpClients`.
- */
-function startTcpServer(tcpPort: number) {
+/** Start a TCP server that accepts clients on tcpPort. */
+function startTcpServer(tcpPort: number): net.Server {
   const tcpServer = net.createServer((socket) => {
     console.log('TCP client connected:', socket.remoteAddress, socket.remotePort);
     tcpClients.push(socket);
@@ -34,8 +31,8 @@ function startTcpServer(tcpPort: number) {
       tcpClients = tcpClients.filter((s) => s !== socket);
     });
 
-    socket.on('error', () => {
-      console.log('TCP client error');
+    socket.on('error', (err) => {
+      console.log('TCP client error:', err);
       tcpClients = tcpClients.filter((s) => s !== socket);
     });
   });
@@ -43,13 +40,10 @@ function startTcpServer(tcpPort: number) {
   tcpServer.listen(tcpPort, () => {
     console.log(`TCP server listening on port ${tcpPort}`);
   });
-
   return tcpServer;
 }
 
-/**
- * Send a command (PLAY or STOP) to all connected TCP clients.
- */
+/** Broadcast a command (PLAY/STOP) to all connected TCP clients. */
 function sendToAllClients(msg: PlaybackCommand) {
   const msgString = JSON.stringify(msg) + '\n';
   const disconnected: net.Socket[] = [];
@@ -58,21 +52,19 @@ function sendToAllClients(msg: PlaybackCommand) {
     try {
       socket.write(msgString);
     } catch (err) {
-      console.log('Error sending to client:', err);
+      console.log('Error writing to client:', err);
       disconnected.push(socket);
     }
   });
 
-  // Remove disconnected clients
+  // Remove disconnected
   disconnected.forEach((sock) => {
     tcpClients = tcpClients.filter((s) => s !== sock);
   });
 }
 
-/**
- * Instruct clients to start playback of `filename` at `positionSec`.
- */
-function startPlayback(filename: string, positionSec: number = 0) {
+/** Tell TCP clients to start playback of `filename` at optional `positionSec`. */
+function startPlayback(filename: string, positionSec = 0) {
   const now = Date.now() * 1_000_000; // Convert ms to ns
   const positionMs = Math.floor(positionSec * 1000);
   sendToAllClients({
@@ -83,9 +75,7 @@ function startPlayback(filename: string, positionSec: number = 0) {
   });
 }
 
-/**
- * Instruct clients to stop playback.
- */
+/** Tell TCP clients to stop playback. */
 function stopPlayback() {
   sendToAllClients({ cmd: 'STOP' });
 }
@@ -94,12 +84,9 @@ function stopPlayback() {
 // 2. Playlist Management
 ////////////////////////////////////////////////////////////////////////////////
 
-/**
- * Recursively load all files from the provided `folder`.
- */
 function loadPlaylist(folder: string): string[] {
   if (!fs.existsSync(folder) || !fs.lstatSync(folder).isDirectory()) {
-    throw new Error(`Folder not found: ${folder}`);
+    throw new Error(`Folder not found or not a directory: ${folder}`);
   }
 
   const playlist: string[] = [];
@@ -112,7 +99,6 @@ function loadPlaylist(folder: string): string[] {
       if (stat.isDirectory()) {
         readDirRecursively(fullPath);
       } else {
-        // Store relative path
         const relative = path.relative(folder, fullPath);
         playlist.push(relative);
       }
@@ -129,31 +115,101 @@ function loadPlaylist(folder: string): string[] {
 
 let globalPlaylist: string[] = [];
 let currentIndex = 0;
+let currentFile: string | null = null;
 
-function createWebServer(httpPort: number, musicDir: string) {
-  // 1. Create an Express app + HTTP server
+/**
+ * Start an Express + Socket.IO server for front-end UI on httpPort.
+ * On "selectFolder", load the new playlist.
+ * On "play", either play the selected track (possibly looping).
+ * On "playNext", advance or loop.
+ * On "stop", stop playback.
+ */
+function createWebServer(httpPort: number): http.Server {
   const app = express();
   const server = http.createServer(app);
   const io = new SocketIOServer(server);
 
-  // Serve static files from "public" (where our UI will live)
+  // Serve static files (our front-end) from "public"
   app.use(express.static(path.join(__dirname, '..', 'public')));
 
-  // 2. Basic socket.io events
+  // Listen for socket.io connections
   io.on('connection', (socket) => {
-    console.log('Web UI client connected via Socket.IO');
+    console.log('Web UI client connected');
 
-    // Send the playlist upon connection
-    socket.emit('playlist', globalPlaylist);
-
-    socket.on('play', (index: number) => {
-      if (index < 0 || index >= globalPlaylist.length) return;
-      currentIndex = index;
-      const filename = globalPlaylist[currentIndex];
-      console.log(`Playing: ${filename}`);
-      startPlayback(filename, 0);
+    // Send current playlist & highlight info
+    socket.emit('playlistData', {
+      playlist: globalPlaylist,
+      currentIndex,
     });
 
+    // 1. User selects a folder -> reload playlist
+    socket.on('selectFolder', (folderPath: string) => {
+      try {
+        globalPlaylist = loadPlaylist(folderPath);
+        currentIndex = 0;
+        currentFile = null;
+        console.log(`Loaded ${globalPlaylist.length} items from folder: ${folderPath}`);
+
+        // Notify all clients about the new playlist
+        io.emit('playlistData', {
+          playlist: globalPlaylist,
+          currentIndex,
+        });
+      } catch (err) {
+        console.error('Error loading folder:', err);
+        socket.emit('errorMessage', (err as Error).message);
+      }
+    });
+
+    // 2. Play a given index, with optional loop
+    interface PlayMsg {
+      index: number;
+      loop: boolean;
+    }
+    socket.on('play', (data: PlayMsg) => {
+      const { index, loop } = data;
+      if (!globalPlaylist.length) return;
+      if (index < 0 || index >= globalPlaylist.length) return;
+
+      currentIndex = index;
+      currentFile = globalPlaylist[currentIndex];
+      console.log(`Playing: ${currentFile}, loop=${loop}`);
+
+      startPlayback(currentFile);
+
+      // Update all clients with currentIndex
+      io.emit('playlistData', {
+        playlist: globalPlaylist,
+        currentIndex,
+      });
+
+      // If loop is on, we could “auto-play” the same track after it ends,
+      // but we have no real "on track end" event from the server side.
+      // We'll handle "playNext" logic separately (see below).
+    });
+
+    // 3. "Play Next" – either loop the same track or move forward
+    socket.on('playNext', (loop: boolean) => {
+      if (!globalPlaylist.length) return;
+      if (loop && currentFile) {
+        // Re-play the same track
+        console.log(`Looping track: ${currentFile}`);
+        startPlayback(currentFile);
+      } else {
+        // Advance to next
+        currentIndex = (currentIndex + 1) % globalPlaylist.length;
+        currentFile = globalPlaylist[currentIndex];
+        console.log(`Playing next: ${currentFile}`);
+        startPlayback(currentFile);
+      }
+
+      io.emit('playlistData', {
+        playlist: globalPlaylist,
+        currentIndex,
+      });
+    });
+
+    // 4. "Stop" – broadcast STOP
     socket.on('stop', () => {
       console.log('Stopping playback');
       stopPlayback();
@@ -164,14 +220,9 @@ function createWebServer(httpPort: number, musicDir: string) {
     });
   });
 
-  // 3. Start the server
   server.listen(httpPort, () => {
-    console.log(`Web server listening on http://localhost:${httpPort}`);
+    console.log(`Web server (UI) listening on http://localhost:${httpPort}`);
   });
-
-  // 4. Load the playlist
-  globalPlaylist = loadPlaylist(musicDir);
-  console.log(`Playlist loaded. ${globalPlaylist.length} items found.`);
 
   return server;
 }
@@ -183,23 +234,23 @@ function createWebServer(httpPort: number, musicDir: string) {
 function main() {
   const TCP_PORT = 12345;
   const HTTP_PORT = 3000;
-  const MUSIC_DIR = '/Users/ivan/Music/From movies/Anime'; // or pass from process.env or command-line
 
-  // Start the TCP server (for external media clients)
+  // Start the TCP server
   const tcpServer = startTcpServer(TCP_PORT);
 
-  // Start the Web/UI server
-  const webServer = createWebServer(HTTP_PORT, MUSIC_DIR);
+  // Start the web server
+  const webServer = createWebServer(HTTP_PORT);
 
-  // In a real app, you might capture shutdown signals:
+  // Graceful shutdown
   process.on('SIGINT', () => {
-    console.log('Shutting down servers...');
+    console.log('Shutting down...');
     serverRunning = false;
 
-    // Close all TCP client sockets
+    // Close all TCP clients
     tcpClients.forEach((sock) => sock.destroy());
     tcpClients = [];
 
+    // Close servers
     tcpServer.close(() => console.log('TCP server closed.'));
     webServer.close(() => {
       console.log('Web server closed.');
