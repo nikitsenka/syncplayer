@@ -1,12 +1,17 @@
 import socket, time, threading, json
 import argparse
 import os
+from mutagen import File as MutagenFile
 
 clients = []
 playback_info = {"startTime": None, "positionMs": 0, "playing": False}
 server_running = True
 playlist = []
+track_durations = []
 current_index = 0
+buffer_seconds = 2  # Buffer time added to track duration
+default_track_duration = 180  # Default duration in seconds if mutagen is not available
+playback_timer = None  # Timer for autoplay next
 
 
 def accept_clients(server_socket):
@@ -37,18 +42,61 @@ def send_to_all(msg_dict):
 
 
 def start_playback(filename, position_sec=0):
+    global playback_timer, current_index
+
+    # Cancel existing timer if any
+    if playback_timer is not None:
+        playback_timer.cancel()
+        playback_timer = None
+
     now = int(time.time_ns())
     position_ms = int(position_sec * 1000)  # Convert seconds to milliseconds
     send_to_all({"cmd": "PLAY", "filename": filename, "startTime": now, "startPosMs": position_ms})
 
+    # Start timer for autoplay next
+    duration = track_durations[current_index]
+    remaining_time = duration - position_sec + buffer_seconds
+    if remaining_time > 0:
+        playback_timer = threading.Timer(remaining_time, auto_play_next)
+        playback_timer.start()
+
 
 def stop_playback():
+    global playback_timer
+
+    # Cancel existing timer if any
+    if playback_timer is not None:
+        playback_timer.cancel()
+        playback_timer = None
+
     send_to_all({"cmd": "STOP"})
 
 
+def auto_play_next():
+    global current_index, playback_timer
+
+    # Reset the timer
+    playback_timer = None
+
+    # Advance to the next track
+    current_index += 1
+    if current_index >= len(playlist):
+        print("Reached end of playlist. Starting from the beginning.")
+        current_index = 0
+
+    filename = playlist[current_index]
+    start_playback(filename)
+
+
 def cleanup():
-    global server_running
+    global server_running, playback_timer
     server_running = False
+
+    # Cancel any playback timer
+    if playback_timer is not None:
+        playback_timer.cancel()
+        playback_timer = None
+
     for c in clients:
         try:
             c.close()
@@ -65,13 +113,23 @@ def load_playlist(folder):
     base_folder = os.path.abspath(folder)
     # Load playlist
     loaded_playlist = []
+    durations = []
     for root, dirs, files in os.walk(base_folder):
         for file in files:
             # Append relative path to playlist
             filepath = os.path.join(root, file)
             relpath = os.path.relpath(filepath, base_folder)
             loaded_playlist.append(relpath)
-    return loaded_playlist
+            # Read track duration
+            full_path = os.path.join(base_folder, relpath)
+            try:
+                audio = MutagenFile(full_path)
+                duration = audio.info.length
+                durations.append(duration)
+            except Exception as e:
+                print(f"Could not read duration of {relpath}: {e}")
+                durations.append(default_track_duration)  # Use default duration
+    return loaded_playlist, durations
 
 
 def parse_args():
@@ -88,13 +146,13 @@ def parse_args():
 
 
 def main():
-    global playlist, current_index
+    global playlist, track_durations, current_index
 
     args = parse_args()
 
     # Load playlist at startup
     try:
-        playlist = load_playlist(args.music_dir)
+        playlist, track_durations = load_playlist(args.music_dir)
         print(f"Loaded {len(playlist)} files into playlist.")
     except ValueError as e:
         print(f"Error: {e}")
@@ -130,7 +188,7 @@ def main():
                 continue
             if len(cmd_parts) > 1:
                 try:
-                    start_sec = int(cmd_parts[1])
+                    start_sec = float(cmd_parts[1])
                     filename = playlist[current_index]
                     start_playback(filename, start_sec)
                     if args.verbose:
@@ -146,6 +204,7 @@ def main():
             if not playlist:
                 print("Playlist is empty.")
                 continue
+            # Advance to the next track
             current_index += 1
             if current_index >= len(playlist):
                 print("Reached end of playlist.")
