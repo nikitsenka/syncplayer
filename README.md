@@ -13,9 +13,6 @@ The server controls playback and synchronizes all connected clients.
 # Basic usage
 python main.py --music-dir /path/to/music
 
-# With interactive TUI (recommended)
-python main.py --music-dir /path/to/music --interactive
-
 # Additional options
 python main.py --music-dir /path/to/music --host 0.0.0.0 --port 12345 --verbose
 ```
@@ -33,12 +30,6 @@ The server has two interface modes:
     - `list` - List all songs in the playlist
     - `exit` - Quit the program
 
-2. **Interactive TUI** (with `--interactive` flag): Full featured interface
-    - Up/Down keys to navigate
-    - Enter to select/double-click to play
-    - Space to play/pause
-    - N for next track
-    - Q to quit
 
 ## Client
 
